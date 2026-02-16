@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ระบบขอลา</title>
+
+<style>
+  body{font-family:system-ui,Segoe UI,Arial; max-width:760px; margin:30px auto; padding:0 12px}
+  h2{margin:0 0 14px}
+  label{display:block; margin-top:10px}
+  input,select,textarea,button{width:100%; padding:10px; margin-top:6px; font-size:16px; box-sizing:border-box}
+  textarea{min-height:90px}
+  button{cursor:pointer}
+  button[disabled]{opacity:.6; cursor:not-allowed}
+  .ok{color:green}
+  .bad{color:#c5221f}
+  .hint{color:#555; font-size:13px; margin-top:6px}
+  .row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .card{border:1px solid #ddd; border-radius:10px; padding:14px}
+</style>
+</head>
+
+<body>
+<div class="card">
+  <h2>ระบบขอลา (แนบใบสั่งแพทย์)</h2>
+  <div class="hint">กรอกข้อมูลให้ครบ แล้วกด “ส่งคำขอลา” ระบบจะบันทึกลง Google Sheet และอัปโหลดไฟล์แนบไป Drive</div>
+
+  <label>รหัส</label>
+  <input id="studentId" placeholder="เช่น 65012345">
+
+  <label>ชื่อ</label>
+  <input id="studentName" placeholder="เช่น นาย ก ข">
+
+  <label>รายวิชา</label>
+  <input id="subject" placeholder="เช่น ฟิสิกส์ 1 / Lab / CTE">
+
+  <label>ประเภทลา</label>
+  <select id="leaveType">
+    <option value="ลาป่วย">ลาป่วย</option>
+    <option value="ลากิจ">ลากิจ</option>
+    <option value="อื่น ๆ">อื่น ๆ</option>
+  </select>
+
+  <div class="row">
+    <div>
+      <label>วันที่เริ่ม</label>
+      <input type="date" id="dateFrom">
+    </div>
+    <div>
+      <label>วันที่สิ้นสุด</label>
+      <input type="date" id="dateTo">
+    </div>
+  </div>
+
+  <label>เหตุผล</label>
+  <textarea id="reason" placeholder="ระบุเหตุผลการลา..."></textarea>
+
+  <label>แนบใบสั่งแพทย์ (ถ้ามี)</label>
+  <input type="file" id="file" accept=".pdf,image/*">
+  <div class="hint">รองรับ PDF/JPG/PNG (แนะนำไม่เกิน 5MB)</div>
+
+  <button id="btn" onclick="send()">ส่งคำขอลา</button>
+
+  <div id="msg" class="hint" style="margin-top:10px"></div>
+</div>
+
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbzpnYYC5xtkFF76IGZUM7f_gkHC1Tw2eHgSPdWt3Bim_OojEBpByaJm4AqPlqQ5wW_ffQ/exec";
+const MAX_FILE_MB = 5;
+
+function setMsg(text, ok=true){
+  const el = document.getElementById("msg");
+  el.className = ok ? "ok" : "bad";
+  el.innerHTML = text;
+}
+
+function disableUI(disabled){
+  const btn = document.getElementById("btn");
+  btn.disabled = disabled;
+}
+
+function readFileAsBase64(file){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = () => {
+      const base64 = String(r.result).split(",")[1] || "";
+      resolve(base64);
+    };
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function clearForm(){
+  studentId.value = "";
+  studentName.value = "";
+  subject.value = "";
+  leaveType.value = "ลาป่วย";
+  dateFrom.value = "";
+  dateTo.value = "";
+  reason.value = "";
+  file.value = "";
+}
+
+async function send(){
+  try{
+    disableUI(true);
+    setMsg("กำลังส่ง...", true);
+
+    const sid = studentId.value.trim();
+    const sname = studentName.value.trim();
+    const subj = subject.value.trim();
+    const lf = leaveType.value;
+    const df = dateFrom.value;
+    const dt = dateTo.value;
+    const rs = reason.value.trim();
+
+    // ตรวจค่าว่าง
+    if(!sid || !sname || !subj || !df || !dt){
+      setMsg("กรุณากรอก: รหัส, ชื่อ, รายวิชา, วันที่เริ่ม, วันที่สิ้นสุด ให้ครบก่อนครับ", false);
+      disableUI(false);
+      return;
+    }
+
+    // ตรวจวันที่ (สิ้นสุดต้องไม่ก่อนเริ่ม)
+    if(dt < df){
+      setMsg("วันที่สิ้นสุด ต้องไม่ก่อน วันที่เริ่ม ครับ", false);
+      disableUI(false);
+      return;
+    }
+
+    const payload = {
+      studentId: sid,
+      studentName: sname,
+      subject: subj,       // ✅ เพิ่มรายวิชา
+      leaveType: lf,
+      dateFrom: df,
+      dateTo: dt,
+      reason: rs
+    };
+
+    const f = document.getElementById("file").files[0];
+
+    if(f){
+      const maxBytes = MAX_FILE_MB * 1024 * 1024;
+      if(f.size > maxBytes){
+        setMsg(`ไฟล์ใหญ่เกิน ${MAX_FILE_MB}MB ครับ กรุณาย่อไฟล์ก่อน`, false);
+        disableUI(false);
+        return;
+      }
+      payload.fileBase64 = await readFileAsBase64(f);
+      payload.fileName = f.name;
+      payload.fileMimeType = f.type || "application/octet-stream";
+    }
+
+    const res = await fetch(API_URL, {
+      method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    });
+
+    let json = null;
+    try{ json = await res.json(); }catch(e){}
+
+    if(!res.ok){
+      setMsg(`ส่งไม่สำเร็จ (HTTP ${res.status})`, false);
+      disableUI(false);
+      return;
+    }
+    if(!json || json.ok !== true){
+      setMsg("ส่งไม่สำเร็จ: " + (json && json.error ? json.error : "ไม่ทราบสาเหตุ"), false);
+      disableUI(false);
+      return;
+    }
+
+    if(json.fileUrl){
+      setMsg(`ส่งสำเร็จ ✅<br>ลิงก์ไฟล์แนบ: <a href="${json.fileUrl}" target="_blank">${json.fileUrl}</a>`, true);
+    }else{
+      setMsg("ส่งสำเร็จ ✅ (ไม่มีไฟล์แนบ)", true);
+    }
+
+    clearForm();
+    disableUI(false);
+
+  }catch(err){
+    setMsg("เกิดข้อผิดพลาด: " + err, false);
+    disableUI(false);
+  }
+}
+</script>
+
+</body>
+</html>
